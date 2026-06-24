@@ -77,10 +77,15 @@ def _crear_driver(headless: bool = True) -> WebDriver:
     options.add_argument("--no-sandbox")
     options.add_argument("--disable-dev-shm-usage")
     options.add_argument("--disable-blink-features=AutomationControlled")
+    options.add_argument("--lang=es-ES")
     options.add_argument(
         "--user-agent=Mozilla/5.0 (X11; Linux x86_64) "
         "AppleWebKit/537.36 (KHTML, like Gecko) "
         "Chrome/120.0.0.0 Safari/537.36"
+    )
+    options.add_experimental_option(
+        "prefs",
+        {"intl.accept_languages": "es-ES,es,en-US,en"},
     )
     options.add_experimental_option("excludeSwitches", ["enable-automation"])
     options.add_experimental_option("useAutomationExtension", False)
@@ -145,14 +150,45 @@ def _esperar_seccion_viviendas(driver: WebDriver, wait: WebDriverWait) -> None:
 def _obtener_seccion_viviendas(driver: WebDriver):
     return driver.execute_script(
         """
+        const hasHousingTable = (el) => {
+          const text = el.innerText || '';
+          const hasPdf = !!el.querySelector('a[href*=".pdf"], a[href*="/dam/"]');
+          const normalized = text || '';
+          return (
+            (
+              normalized.includes('Superficie')
+              || normalized.includes('Useful area')
+              || normalized.includes('Gross floor area')
+            )
+            && (
+              normalized.includes('Precio')
+              || normalized.includes('Price')
+            )
+            && (
+              normalized.includes('Habitaciones')
+              || normalized.includes('Habitacion')
+              || normalized.includes('Bedrooms')
+            )
+            && (
+              normalized.includes('Plano')
+              || normalized.includes('Floor plan')
+              || hasPdf
+            )
+          );
+        };
+
         const heading = [...document.querySelectorAll('h1,h2,h3,h4,[role="heading"],div,span')]
-          .find(el => (el.innerText || '').includes('Elige la casa que quieres'));
+          .find(el => {
+            const text = el.innerText || '';
+            return text.includes('Elige la casa que quieres')
+              || text.includes('Choose the home you want')
+              || text.includes('Choose your home');
+          });
 
         if (heading) {
           let node = heading;
           while (node && node !== document.body) {
-            const text = node.innerText || '';
-            if (text.includes('Superficie') && text.includes('Precio')) {
+            if (hasHousingTable(node)) {
               return node;
             }
             node = node.parentElement;
@@ -162,10 +198,7 @@ def _obtener_seccion_viviendas(driver: WebDriver):
 
         const candidates = [...document.querySelectorAll('section, article, div, table')]
           .filter(el => {
-            const text = el.innerText || '';
-            return text.includes('Superficie')
-              && text.includes('Precio')
-              && (text.includes('Habitaciones') || text.includes('Habitacion'));
+            return hasHousingTable(el);
           });
 
         if (candidates.length) {
@@ -187,10 +220,25 @@ def _seccion_viviendas_disponible(driver: WebDriver) -> bool:
             """
             const text = document.body.innerText || '';
             return text.includes('Elige la casa que quieres')
+              || text.includes('Choose the home you want')
+              || text.includes('Choose your home')
               || (
-                text.includes('Superficie')
-                && text.includes('Precio')
-                && (text.includes('Habitaciones') || text.includes('Habitacion'))
+                (
+                  text.includes('Superficie')
+                  || text.includes('Useful area')
+                  || text.includes('Gross floor area')
+                )
+                && (text.includes('Precio') || text.includes('Price'))
+                && (
+                  text.includes('Habitaciones')
+                  || text.includes('Habitacion')
+                  || text.includes('Bedrooms')
+                )
+                && (
+                  text.includes('Plano')
+                  || text.includes('Floor plan')
+                  || !!document.querySelector('a[href*=".pdf"], a[href*="/dam/"]')
+                )
               );
             """
         )
@@ -255,8 +303,12 @@ def _extraer_filas_desde_tabla(seccion) -> list[dict[str, str]]:
 def _extraer_filas_desde_bloques(seccion) -> list[dict[str, str]]:
     candidatos = seccion.find_elements(
         By.XPATH,
-        ".//*[contains(., 'Superficie') and contains(., 'Precio') and "
-        "(contains(., 'Habitaciones') or contains(., 'Habitacion'))]",
+        ".//*[("
+        "contains(., 'Superficie') or contains(., 'Useful area') or "
+        "contains(., 'Gross floor area')"
+        ") and (contains(., 'Precio') or contains(., 'Price')) and "
+        "(contains(., 'Habitaciones') or contains(., 'Habitacion') or "
+        "contains(., 'Bedrooms'))]",
     )
     filas = []
     textos_vistos = set()
@@ -275,6 +327,11 @@ def _extraer_filas_desde_bloques(seccion) -> list[dict[str, str]]:
                 "Habitaciones",
                 "Precio",
                 "Plano",
+                "Useful area",
+                "Gross floor area",
+                "Bedrooms",
+                "Price",
+                "Floor plan",
             ],
         )
         if partes:
@@ -319,12 +376,18 @@ def _normalizar_nombre_columna(nombre: str) -> str:
         "Superficie útil": "Superficie útil",
         "Superficie util": "Superficie útil",
         "Sup. util": "Superficie útil",
+        "Useful area": "Superficie útil",
         "Superficie construida": "Superficie construida",
         "Sup. construida": "Superficie construida",
+        "Gross floor area": "Superficie construida",
         "Habitaciones": "Habitaciones",
         "Dormitorios": "Habitaciones",
+        "Bedrooms": "Habitaciones",
         "Precio": "Precio",
+        "Price": "Precio",
+        "Price from": "Precio",
         "Plano": "Plano",
+        "Floor plan": "Plano",
     }
     return equivalencias.get(nombre_limpio, nombre_limpio)
 
@@ -334,8 +397,14 @@ def _valores_por_etiqueta(texto: str, etiquetas: list[str]) -> dict[str, str]:
         texto.replace("Superficie util", "Superficie útil")
         .replace("Sup. útil", "Superficie útil")
         .replace("Sup. util", "Superficie útil")
+        .replace("Useful area", "Superficie útil")
         .replace("Sup. construida", "Superficie construida")
+        .replace("Gross floor area", "Superficie construida")
         .replace("Dormitorios", "Habitaciones")
+        .replace("Bedrooms", "Habitaciones")
+        .replace("Price from", "Precio")
+        .replace("Price", "Precio")
+        .replace("Floor plan", "Plano")
     )
 
     indices = []
