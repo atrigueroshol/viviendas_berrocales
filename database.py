@@ -6,11 +6,6 @@ import pandas as pd
 import psycopg
 
 
-DEFAULT_DATABASE_URL = (
-    "postgresql://neondb_owner:npg_xS04IVRBQWAg"
-    "@ep-small-bar-ab2z2ozf.eu-west-2.aws.neon.tech/neondb?sslmode=require"
-)
-
 TABLE_NAME = "viviendas_kyrenia"
 CREATE_TABLE_SQL_PATH = Path(__file__).with_name("create_table.sql")
 
@@ -53,7 +48,7 @@ INSERT_SQL = f"""
 """
 
 
-def crear_tabla_viviendas(connection_string: str = DEFAULT_DATABASE_URL) -> None:
+def crear_tabla_viviendas(connection_string: str) -> None:
     """Crea la tabla de viviendas si todavia no existe."""
     create_table_sql = CREATE_TABLE_SQL_PATH.read_text(encoding="utf-8")
     with psycopg.connect(connection_string) as conn:
@@ -63,7 +58,7 @@ def crear_tabla_viviendas(connection_string: str = DEFAULT_DATABASE_URL) -> None
 
 def insertar_viviendas(
     df: pd.DataFrame,
-    connection_string: str = DEFAULT_DATABASE_URL,
+    connection_string: str,
 ) -> int:
     """Inserta en PostgreSQL las filas devueltas por obtener_viviendas_kyrenia."""
     if df.empty:
