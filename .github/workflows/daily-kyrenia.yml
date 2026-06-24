@@ -11,6 +11,7 @@ jobs:
 
     env:
       DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      SCRAPER_DEBUG_DIR: scraper-debug
 
     steps:
       - name: Checkout repository
@@ -29,3 +30,11 @@ jobs:
 
       - name: Run scraper and load database
         run: python main.py
+
+      - name: Upload scraper debug artifacts
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: scraper-debug
+          path: scraper-debug
+          if-no-files-found: ignore

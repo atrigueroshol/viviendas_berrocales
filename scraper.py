@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import os
+import time
+from pathlib import Path
 from typing import Iterable
 
 import pandas as pd
@@ -30,7 +33,7 @@ EXPECTED_COLUMNS = [
 def obtener_viviendas_kyrenia(
     url: str = DEFAULT_URL,
     headless: bool = True,
-    timeout: int = 30,
+    timeout: int = 60,
     driver: WebDriver | None = None,
 ) -> pd.DataFrame:
     """Extrae la tabla 'Elige la casa que quieres' y la devuelve como DataFrame."""
@@ -57,6 +60,9 @@ def obtener_viviendas_kyrenia(
         df = _normalizar_columnas(df)
         df["inserted_at"] = inserted_at
         return df.reindex(columns=EXPECTED_COLUMNS)
+    except Exception:
+        _guardar_debug(driver)
+        raise
     finally:
         if own_driver:
             driver.quit()
@@ -70,10 +76,34 @@ def _crear_driver(headless: bool = True) -> WebDriver:
     options.add_argument("--disable-gpu")
     options.add_argument("--no-sandbox")
     options.add_argument("--disable-dev-shm-usage")
+    options.add_argument("--disable-blink-features=AutomationControlled")
+    options.add_argument(
+        "--user-agent=Mozilla/5.0 (X11; Linux x86_64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/120.0.0.0 Safari/537.36"
+    )
+    options.add_experimental_option("excludeSwitches", ["enable-automation"])
+    options.add_experimental_option("useAutomationExtension", False)
     return webdriver.Chrome(options=options)
 
 
 def _aceptar_cookies(driver: WebDriver, timeout: int = 8) -> None:
+    driver.execute_script(
+        """
+        const selectors = [
+          '#onetrust-accept-btn-handler',
+          'button[id*="accept"]',
+          'button[class*="accept"]'
+        ];
+        for (const selector of selectors) {
+          const button = document.querySelector(selector);
+          if (button) {
+            button.click();
+            return;
+          }
+        }
+        """
+    )
     textos = ("Aceptar", "Acepto", "Aceptar todas", "Accept", "Allow all")
     xpath = " | ".join(
         f"//button[contains(normalize-space(.), '{texto}')]"
@@ -93,23 +123,22 @@ def _aceptar_cookies(driver: WebDriver, timeout: int = 8) -> None:
 
 def _esperar_seccion_viviendas(driver: WebDriver, wait: WebDriverWait) -> None:
     wait.until(
-        EC.presence_of_element_located(
-            (
-                By.XPATH,
-                "//*[contains(normalize-space(.), 'Elige la casa que quieres')]",
-            )
-        )
+        lambda d: d.execute_script("return document.readyState") == "complete"
     )
-    driver.execute_script(
-        """
-        const node = [...document.querySelectorAll('h1,h2,h3,h4,[role="heading"],div,span')]
-          .find(el => (el.innerText || '').includes('Elige la casa que quieres'));
-        if (node) node.scrollIntoView({block: 'center'});
-        """
-    )
-    wait.until(
-        lambda d: "Superficie" in _obtener_seccion_viviendas(d).text
-        and "Precio" in _obtener_seccion_viviendas(d).text
+    deadline = time.monotonic() + getattr(wait, "_timeout", 60)
+
+    while time.monotonic() < deadline:
+        _scroll_pagina(driver)
+        if _seccion_viviendas_disponible(driver):
+            seccion = _obtener_seccion_viviendas(driver)
+            driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", seccion)
+            return
+        time.sleep(1)
+
+    texto = " ".join(driver.find_element(By.TAG_NAME, "body").text.split())[:500]
+    raise TimeoutException(
+        "No se encontro la seccion de viviendas. "
+        f"title={driver.title!r}; url={driver.current_url!r}; body={texto!r}"
     )
 
 
@@ -119,21 +148,80 @@ def _obtener_seccion_viviendas(driver: WebDriver):
         const heading = [...document.querySelectorAll('h1,h2,h3,h4,[role="heading"],div,span')]
           .find(el => (el.innerText || '').includes('Elige la casa que quieres'));
 
-        if (!heading) {
-          throw new Error('No se encontro el apartado "Elige la casa que quieres".');
+        if (heading) {
+          let node = heading;
+          while (node && node !== document.body) {
+            const text = node.innerText || '';
+            if (text.includes('Superficie') && text.includes('Precio')) {
+              return node;
+            }
+            node = node.parentElement;
+          }
+          return heading.parentElement;
         }
 
-        let node = heading;
-        while (node && node !== document.body) {
-          const text = node.innerText || '';
-          if (text.includes('Superficie') && text.includes('Precio')) {
-            return node;
-          }
-          node = node.parentElement;
+        const candidates = [...document.querySelectorAll('section, article, div, table')]
+          .filter(el => {
+            const text = el.innerText || '';
+            return text.includes('Superficie')
+              && text.includes('Precio')
+              && (text.includes('Habitaciones') || text.includes('Habitacion'));
+          });
+
+        if (candidates.length) {
+          return candidates.reduce((best, current) =>
+            (current.innerText || '').length < (best.innerText || '').length
+              ? current
+              : best
+          );
         }
-        return heading.parentElement;
+
+        throw new Error('No se encontro el apartado de viviendas.');
         """
     )
+
+
+def _seccion_viviendas_disponible(driver: WebDriver) -> bool:
+    return bool(
+        driver.execute_script(
+            """
+            const text = document.body.innerText || '';
+            return text.includes('Elige la casa que quieres')
+              || (
+                text.includes('Superficie')
+                && text.includes('Precio')
+                && (text.includes('Habitaciones') || text.includes('Habitacion'))
+              );
+            """
+        )
+    )
+
+
+def _scroll_pagina(driver: WebDriver) -> None:
+    driver.execute_script(
+        """
+        const height = Math.max(
+          document.body.scrollHeight,
+          document.documentElement.scrollHeight
+        );
+        const nextY = Math.min(window.scrollY + Math.floor(window.innerHeight * 0.8), height);
+        window.scrollTo(0, nextY);
+        """
+    )
+
+
+def _guardar_debug(driver: WebDriver) -> None:
+    debug_dir = os.getenv("SCRAPER_DEBUG_DIR")
+    if not debug_dir:
+        return
+
+    try:
+        path = Path(debug_dir)
+        path.mkdir(parents=True, exist_ok=True)
+        (path / "page.html").write_text(driver.page_source, encoding="utf-8")
+        driver.save_screenshot(str(path / "screenshot.png"))
+    except Exception:
+        pass
 
 
 def _extraer_filas_desde_tabla(seccion) -> list[dict[str, str]]:
