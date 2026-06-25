@@ -37,13 +37,21 @@ INSERT_SQL = f"""
         plano,
         inserted_at
     )
-    VALUES (
+    SELECT
         %(superficie_util)s,
         %(superficie_construida)s,
         %(habitaciones)s,
         %(precio)s,
         %(plano)s,
         %(inserted_at)s
+    WHERE NOT EXISTS (
+        SELECT 1
+        FROM {TABLE_NAME}
+        WHERE superficie_util IS NOT DISTINCT FROM %(superficie_util)s
+          AND superficie_construida IS NOT DISTINCT FROM %(superficie_construida)s
+          AND habitaciones IS NOT DISTINCT FROM %(habitaciones)s
+          AND precio IS NOT DISTINCT FROM %(precio)s
+          AND plano IS NOT DISTINCT FROM %(plano)s
     )
 """
 
@@ -69,9 +77,12 @@ def insertar_viviendas(
 
     with psycopg.connect(connection_string) as conn:
         with conn.cursor() as cur:
-            cur.executemany(INSERT_SQL, registros)
+            filas_insertadas = 0
+            for registro in registros:
+                cur.execute(INSERT_SQL, registro)
+                filas_insertadas += cur.rowcount
 
-    return len(registros)
+    return filas_insertadas
 
 
 def _preparar_dataframe_para_insert(df: pd.DataFrame) -> pd.DataFrame:
